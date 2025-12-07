@@ -108,6 +108,11 @@ module picorv32_wrapper #(
 	wire        mem_axi_rready;
 	wire [31:0] mem_axi_rdata;
 
+	// SMZ configuration (can be driven from CPU CSRs or set statically)
+	reg [31:0] smz_base = 32'h10000000;   // Secure region starts at 0x10000000
+	reg [31:0] smz_size = 32'h00010000;   // 64 KB secure region
+	reg        smz_enable = 1;             // SMZ enabled by default
+
 	axi4_memory #(
 		.AXI_TEST (AXI_TEST),
 		.VERBOSE  (VERBOSE)
@@ -135,7 +140,11 @@ module picorv32_wrapper #(
 		.mem_axi_rready  (mem_axi_rready  ),
 		.mem_axi_rdata   (mem_axi_rdata   ),
 
-		.tests_passed    (tests_passed    )
+		.tests_passed    (tests_passed    ),
+		
+		.smz_base        (smz_base        ),
+		.smz_size        (smz_size        ),
+		.smz_enable      (smz_enable      )
 	);
 
 `ifdef RISCV_FORMAL
@@ -303,7 +312,12 @@ module axi4_memory #(
 	input             mem_axi_rready,
 	output reg [31:0] mem_axi_rdata,
 
-	output reg        tests_passed
+	output reg        tests_passed,
+	
+	// SMZ configuration inputs (from CPU CSRs)
+	input      [31:0] smz_base,
+	input      [31:0] smz_size,
+	input             smz_enable
 );
 	reg [31:0]   memory [0:128*1024/4-1] /* verilator public */;
 	reg verbose;
@@ -380,11 +394,29 @@ module axi4_memory #(
 		fast_wdata <= 1;
 	end endtask
 
+	// Helper: compute encryption keystream
+	function [31:0] get_keystream;
+		input [31:0] addr;
+		get_keystream = addr ^ 32'hDEADBEEF;
+	endfunction
+
 	task handle_axi_rvalid; begin
+		reg [31:0] read_data;
+		reg [31:0] keystream;
+		reg is_secure;
+		
+		read_data = memory[latched_raddr >> 2];
+		is_secure = smz_enable && (latched_raddr >= smz_base) && (latched_raddr < (smz_base + smz_size));
+		
+		if (is_secure) begin
+			keystream = get_keystream(latched_raddr);
+			read_data = read_data ^ keystream;  // Decrypt
+		end
+		
 		if (verbose)
-			$display("RD: ADDR=%08x DATA=%08x%s", latched_raddr, memory[latched_raddr >> 2], latched_rinsn ? " INSN" : "");
+			$display("RD: ADDR=%08x DATA=%08x%s", latched_raddr, read_data, latched_rinsn ? " INSN" : "");
 		if (latched_raddr < 128*1024) begin
-			mem_axi_rdata <= memory[latched_raddr >> 2];
+			mem_axi_rdata <= read_data;
 			mem_axi_rvalid <= 1;
 			latched_raddr_en = 0;
 		end else begin
@@ -394,13 +426,25 @@ module axi4_memory #(
 	end endtask
 
 	task handle_axi_bvalid; begin
+		reg [31:0] encrypted_data;
+		reg [31:0] keystream;
+		reg is_secure;
+		
+		is_secure = smz_enable && (latched_waddr >= smz_base) && (latched_waddr < (smz_base + smz_size));
+		encrypted_data = latched_wdata;
+		
+		if (is_secure) begin
+			keystream = get_keystream(latched_waddr);
+			encrypted_data = encrypted_data ^ keystream;  // Encrypt
+		end
+		
 		if (verbose)
-			$display("WR: ADDR=%08x DATA=%08x STRB=%04b", latched_waddr, latched_wdata, latched_wstrb);
+			$display("WR: ADDR=%08x DATA=%08x STRB=%04b", latched_waddr, encrypted_data, latched_wstrb);
 		if (latched_waddr < 128*1024) begin
-			if (latched_wstrb[0]) memory[latched_waddr >> 2][ 7: 0] <= latched_wdata[ 7: 0];
-			if (latched_wstrb[1]) memory[latched_waddr >> 2][15: 8] <= latched_wdata[15: 8];
-			if (latched_wstrb[2]) memory[latched_waddr >> 2][23:16] <= latched_wdata[23:16];
-			if (latched_wstrb[3]) memory[latched_waddr >> 2][31:24] <= latched_wdata[31:24];
+			if (latched_wstrb[0]) memory[latched_waddr >> 2][ 7: 0] <= encrypted_data[ 7: 0];
+			if (latched_wstrb[1]) memory[latched_waddr >> 2][15: 8] <= encrypted_data[15: 8];
+			if (latched_wstrb[2]) memory[latched_waddr >> 2][23:16] <= encrypted_data[23:16];
+			if (latched_wstrb[3]) memory[latched_waddr >> 2][31:24] <= encrypted_data[31:24];
 		end else
 		if (latched_waddr == 32'h1000_0000) begin
 			if (verbose) begin
