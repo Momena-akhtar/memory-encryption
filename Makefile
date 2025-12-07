@@ -12,7 +12,7 @@ IVERILOG = iverilog$(ICARUS_SUFFIX)
 VVP = vvp$(ICARUS_SUFFIX)
 
 TEST_OBJS = $(addsuffix .o,$(basename $(wildcard tests/*.S)))
-FIRMWARE_OBJS = firmware/start.o firmware/irq.o firmware/print.o firmware/hello.o firmware/sieve.o firmware/multest.o firmware/stats.o
+FIRMWARE_OBJS = firmware/start.o firmware/irq.o firmware/print.o firmware/hello.o firmware/sieve.o firmware/multest.o firmware/stats.o firmware/smz_test.o
 GCC_WARNS  = -Werror -Wall -Wextra -Wshadow -Wundef -Wpointer-arith -Wcast-qual -Wcast-align -Wwrite-strings
 GCC_WARNS += -Wredundant-decls -Wstrict-prototypes -Wmissing-prototypes -pedantic # -Wconversion
 TOOLCHAIN_PREFIX = riscv64-unknown-elf-
@@ -55,7 +55,7 @@ test_verilator: testbench_verilator firmware/firmware.hex
 	./testbench_verilator
 
 testbench.vvp: testbench.v picorv32.v
-	$(IVERILOG) -o $@ $(subst C,-DCOMPRESSED_ISA,$(COMPRESSED_ISA)) $^
+	$(IVERILOG) -g2009 -o $@ $(subst C,-DCOMPRESSED_ISA,$(COMPRESSED_ISA)) $^
 	chmod -x $@
 
 testbench_rvf.vvp: testbench.v picorv32.v rvfimon.v
@@ -107,16 +107,16 @@ firmware/firmware.bin: firmware/firmware.elf
 	chmod -x $@
 
 firmware/firmware.elf: $(FIRMWARE_OBJS) $(TEST_OBJS) firmware/sections.lds
-	$(TOOLCHAIN_PREFIX)gcc -Os -mabi=ilp32 -march=rv32im$(subst C,c,$(COMPRESSED_ISA)) -ffreestanding -nostdlib -o $@ \
+	$(TOOLCHAIN_PREFIX)gcc -Os -mabi=ilp32 -march=rv32im$(subst C,c,$(COMPRESSED_ISA))_zicsr -ffreestanding -nostdlib -o $@ \
 		-Wl,--build-id=none,-Bstatic,-T,firmware/sections.lds,-Map,firmware/firmware.map,--strip-debug \
 		$(FIRMWARE_OBJS) $(TEST_OBJS) -lgcc
 	chmod -x $@
 
 firmware/start.o: firmware/start.S
-	$(TOOLCHAIN_PREFIX)gcc -c -mabi=ilp32 -march=rv32im$(subst C,c,$(COMPRESSED_ISA)) -o $@ $<
+	$(TOOLCHAIN_PREFIX)gcc -c -mabi=ilp32 -march=rv32im$(subst C,c,$(COMPRESSED_ISA))_zicsr -o $@ $<
 
 firmware/%.o: firmware/%.c
-	$(TOOLCHAIN_PREFIX)gcc -c -mabi=ilp32 -march=rv32i$(subst C,c,$(COMPRESSED_ISA)) -Os --std=c99 $(GCC_WARNS) -ffreestanding -nostdlib -o $@ $<
+	$(TOOLCHAIN_PREFIX)gcc -c -mabi=ilp32 -march=rv32i$(subst C,c,$(COMPRESSED_ISA))_zicsr -Os --std=c99 $(GCC_WARNS) -ffreestanding -nostdlib -o $@ $<
 
 tests/%.o: tests/%.S tests/riscv_test.h tests/test_macros.h
 	$(TOOLCHAIN_PREFIX)gcc -c -mabi=ilp32 -march=rv32im -o $@ -DTEST_FUNC_NAME=$(notdir $(basename $<)) \
