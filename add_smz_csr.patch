@@ -1,0 +1,42 @@
+--- a/picorv32.v
++++ b/picorv32.v
+@@ -1706,6 +1706,40 @@ module picorv32 #(
+ dbg_rs1val_valid <= 1;
+ cpu_state <= cpu_state_fetch;
+ end
++// SMZ CSR handling - Base Address (CSR 0x200)
++instr_smz_base: begin
++latched_store <= 1;
++`debug($display("SMZ_BASE RD: 0x%08x", smz_base);)
++reg_out <= smz_base;
++if (mem_rdata_q[14:12] != 3'b010) begin
++smz_base <= cpuregs_rs1;
++`debug($display("SMZ_BASE WR: 0x%08x", cpuregs_rs1);)
++end
++cpu_state <= cpu_state_fetch;
++end
++// SMZ CSR handling - Size (CSR 0x201)
++instr_smz_size: begin
++latched_store <= 1;
++`debug($display("SMZ_SIZE RD: 0x%08x", smz_size);)
++reg_out <= smz_size;
++if (mem_rdata_q[14:12] != 3'b010) begin
++smz_size <= cpuregs_rs1;
++`debug($display("SMZ_SIZE WR: 0x%08x", cpuregs_rs1);)
++end
++cpu_state <= cpu_state_fetch;
++end
++// SMZ CSR handling - Enable Flag (CSR 0x202)
++instr_smz_enable: begin
++latched_store <= 1;
++`debug($display("SMZ_ENABLE RD: 0x%08x", smz_enable);)
++reg_out <= smz_enable;
++if (mem_rdata_q[14:12] != 3'b010) begin
++smz_enable <= cpuregs_rs1;
++`debug($display("SMZ_ENABLE WR: 0x%08x", cpuregs_rs1);)
++end
++cpu_state <= cpu_state_fetch;
++end
+ is_lb_lh_lw_lbu_lhu && !instr_trap: begin
+ `debug($display("LD_RS1: %2d 0x%08x", decoded_rs1, cpuregs_rs1);)
+ reg_op1 <= cpuregs_rs1;
