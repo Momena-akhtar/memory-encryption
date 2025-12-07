@@ -199,6 +199,11 @@ module picorv32 #(
 	reg [31:0] irq_pending;
 	reg [31:0] timer;
 
+	// SMZ Control Status Registers (CSRs)
+	reg [31:0] smz_base;   // Secure region base address (CSR 0x200)
+	reg [31:0] smz_size;   // Secure region size (CSR 0x201)
+	reg [31:0] smz_enable; // SMZ enable flag (CSR 0x202)
+
 `ifndef PICORV32_REGS
 	reg [31:0] cpuregs [0:regfile_size-1];
 
@@ -650,6 +655,8 @@ module picorv32 #(
 	reg instr_add, instr_sub, instr_sll, instr_slt, instr_sltu, instr_xor, instr_srl, instr_sra, instr_or, instr_and;
 	reg instr_rdcycle, instr_rdcycleh, instr_rdinstr, instr_rdinstrh, instr_ecall_ebreak, instr_fence;
 	reg instr_getq, instr_setq, instr_retirq, instr_maskirq, instr_waitirq, instr_timer;
+	// SMZ CSR instruction decoders
+	reg instr_smz_base, instr_smz_size, instr_smz_enable;
 	wire instr_trap;
 
 	reg [regindex_bits-1:0] decoded_rd, decoded_rs1;
@@ -682,7 +689,8 @@ module picorv32 #(
 			instr_addi, instr_slti, instr_sltiu, instr_xori, instr_ori, instr_andi, instr_slli, instr_srli, instr_srai,
 			instr_add, instr_sub, instr_sll, instr_slt, instr_sltu, instr_xor, instr_srl, instr_sra, instr_or, instr_and,
 			instr_rdcycle, instr_rdcycleh, instr_rdinstr, instr_rdinstrh, instr_fence,
-			instr_getq, instr_setq, instr_retirq, instr_maskirq, instr_waitirq, instr_timer};
+			instr_getq, instr_setq, instr_retirq, instr_maskirq, instr_waitirq, instr_timer,
+			instr_smz_base, instr_smz_size, instr_smz_enable};
 
 	wire is_rdcycle_rdcycleh_rdinstr_rdinstrh;
 	assign is_rdcycle_rdcycleh_rdinstr_rdinstrh = |{instr_rdcycle, instr_rdcycleh, instr_rdinstr, instr_rdinstrh};
@@ -1091,6 +1099,12 @@ module picorv32 #(
 			instr_setq    <= mem_rdata_q[6:0] == 7'b0001011 && mem_rdata_q[31:25] == 7'b0000001 && ENABLE_IRQ && ENABLE_IRQ_QREGS;
 			instr_maskirq <= mem_rdata_q[6:0] == 7'b0001011 && mem_rdata_q[31:25] == 7'b0000011 && ENABLE_IRQ;
 			instr_timer   <= mem_rdata_q[6:0] == 7'b0001011 && mem_rdata_q[31:25] == 7'b0000101 && ENABLE_IRQ && ENABLE_IRQ_TIMER;
+
+			// SMZ CSR Instructions (using custom SYSTEM extension space)
+			// CSRRW/CSRRS with SMZ CSR addresses: 0x200=base, 0x201=size, 0x202=enable
+			instr_smz_base   <= mem_rdata_q[6:0] == 7'b1110011 && mem_rdata_q[31:20] == 12'h200 && mem_rdata_q[14:12] != 3'b000;
+			instr_smz_size   <= mem_rdata_q[6:0] == 7'b1110011 && mem_rdata_q[31:20] == 12'h201 && mem_rdata_q[14:12] != 3'b000;
+			instr_smz_enable <= mem_rdata_q[6:0] == 7'b1110011 && mem_rdata_q[31:20] == 12'h202 && mem_rdata_q[14:12] != 3'b000;
 
 			is_slli_srli_srai <= is_alu_reg_imm && |{
 				mem_rdata_q[14:12] == 3'b001 && mem_rdata_q[31:25] == 7'b0000000,
@@ -1693,7 +1707,40 @@ module picorv32 #(
 						dbg_rs1val_valid <= 1;
 						cpu_state <= cpu_state_fetch;
 					end
-					is_lb_lh_lw_lbu_lhu && !instr_trap: begin
+				// SMZ CSR handling - Base Address (CSR 0x200)
+				instr_smz_base: begin
+					latched_store <= 1;
+					`debug($display("SMZ_BASE RD: 0x%08x", smz_base);)
+					reg_out <= smz_base;
+					if (mem_rdata_q[14:12] != 3'b010) begin  // Not CSRRS with zero
+						smz_base <= cpuregs_rs1;
+						`debug($display("SMZ_BASE WR: 0x%08x", cpuregs_rs1);)
+					end
+					cpu_state <= cpu_state_fetch;
+				end
+				// SMZ CSR handling - Size (CSR 0x201)
+				instr_smz_size: begin
+					latched_store <= 1;
+					`debug($display("SMZ_SIZE RD: 0x%08x", smz_size);)
+					reg_out <= smz_size;
+					if (mem_rdata_q[14:12] != 3'b010) begin  // Not CSRRS with zero
+						smz_size <= cpuregs_rs1;
+						`debug($display("SMZ_SIZE WR: 0x%08x", cpuregs_rs1);)
+					end
+					cpu_state <= cpu_state_fetch;
+				end
+				// SMZ CSR handling - Enable Flag (CSR 0x202)
+				instr_smz_enable: begin
+					latched_store <= 1;
+					`debug($display("SMZ_ENABLE RD: 0x%08x", smz_enable);)
+					reg_out <= smz_enable;
+					if (mem_rdata_q[14:12] != 3'b010) begin  // Not CSRRS with zero
+						smz_enable <= cpuregs_rs1;
+						`debug($display("SMZ_ENABLE WR: 0x%08x", cpuregs_rs1);)
+					end
+					cpu_state <= cpu_state_fetch;
+				end
+				is_lb_lh_lw_lbu_lhu && !instr_trap: begin
 						`debug($display("LD_RS1: %2d 0x%08x", decoded_rs1, cpuregs_rs1);)
 						reg_op1 <= cpuregs_rs1;
 						dbg_rs1val <= cpuregs_rs1;
@@ -2725,6 +2772,84 @@ endmodule
 
 
 /***************************************************************
+ * picorv32_smz - Secure Memory Zone Module
+ * 
+ * This module implements hardware memory encryption for a RISC-V core,
+ * providing security for volatile memory (RAM) against physical attacks
+ * like cold-boot attacks. It sits between the CPU and main memory.
+ ***************************************************************/
+
+module picorv32_smz #(
+	parameter [31:0] SECURE_REGION_BASE = 32'h00010000,
+	parameter [31:0] SECURE_REGION_SIZE = 32'h00010000,
+	parameter [ 0:0] ENABLE_SMZ = 1
+) (
+	input wire clk,
+	input wire resetn,
+	
+	// CPU-side interface (from PicoRV32)
+	input wire        cpu_mem_valid,
+	input wire [31:0] cpu_mem_addr,
+	input wire [31:0] cpu_mem_wdata,
+	input wire [ 3:0] cpu_mem_wstrb,
+	output reg [31:0] cpu_mem_rdata,
+	output wire       cpu_mem_ready,
+	
+	// Memory-side interface (to external memory)
+	output wire       mem_valid,
+	output wire [31:0] mem_addr,
+	output wire [31:0] mem_wdata,
+	output wire [ 3:0] mem_wstrb,
+	input wire [31:0] mem_rdata,
+	input wire        mem_ready,
+	
+	// SMZ configuration
+	input wire [31:0] smz_key_0,  // Encryption key part 0 (32-bit chunks of 128-bit key)
+	input wire [31:0] smz_key_1,  // Encryption key part 1
+	input wire [31:0] smz_key_2,  // Encryption key part 2
+	input wire [31:0] smz_key_3   // Encryption key part 3
+);
+
+	// Internal signals
+	wire in_secure_region;
+	wire [31:0] encrypted_data;
+	wire [31:0] decrypted_data;
+	
+	// Simple encryption/decryption logic using XOR with key material
+	// In production, replace with AES or other secure cipher
+	assign in_secure_region = ENABLE_SMZ && 
+	                          (cpu_mem_addr >= SECURE_REGION_BASE) && 
+	                          (cpu_mem_addr < (SECURE_REGION_BASE + SECURE_REGION_SIZE));
+	
+	// Generate encryption mask from key material
+	wire [31:0] key_xor = smz_key_0 ^ smz_key_1 ^ smz_key_2 ^ smz_key_3;
+	
+	// Simple encryption: XOR with key-derived value
+	// For production use: implement AES-128, ChaCha20, or equivalent
+	assign encrypted_data = in_secure_region ? (cpu_mem_wdata ^ key_xor) : cpu_mem_wdata;
+	assign decrypted_data = in_secure_region ? (mem_rdata ^ key_xor) : mem_rdata;
+	
+	// Pass-through for control signals when SMZ is disabled or address is outside secure region
+	assign mem_valid = cpu_mem_valid;
+	assign mem_addr = cpu_mem_addr;
+	assign mem_wdata = encrypted_data;  // Use encrypted data for writes to secure region
+	assign mem_wstrb = cpu_mem_wstrb;
+	assign cpu_mem_ready = mem_ready;
+	
+	// Registered output to handle pipeline delays
+	always @(posedge clk) begin
+		if (!resetn) begin
+			cpu_mem_rdata <= 32'b0;
+		end else begin
+			// Use decrypted data for reads from secure region, raw data for other regions
+			cpu_mem_rdata <= decrypted_data;
+		end
+	end
+
+endmodule
+
+
+/***************************************************************
  * picorv32_axi_adapter
  ***************************************************************/
 
@@ -3041,9 +3166,189 @@ module picorv32_wb #(
 
 					state <= IDLE;
 				end
-				default:
-					state <= IDLE;
-			endcase
-		end
+		default:
+			state <= IDLE;
+		endcase
 	end
+end
+endmodule
+
+
+/***************************************************************
+ * picorv32_with_smz - PicoRV32 with Integrated SMZ
+ * 
+ * Wrapper module that integrates the PicoRV32 processor with 
+ * the Secure Memory Zone (SMZ) module for transparent memory encryption.
+ * This provides a drop-in replacement for picorv32 with security features.
+ ***************************************************************/
+
+module picorv32_with_smz #(
+	parameter [ 0:0] ENABLE_COUNTERS = 1,
+	parameter [ 0:0] ENABLE_COUNTERS64 = 1,
+	parameter [ 0:0] ENABLE_REGS_16_31 = 1,
+	parameter [ 0:0] ENABLE_REGS_DUALPORT = 1,
+	parameter [ 0:0] LATCHED_MEM_RDATA = 0,
+	parameter [ 0:0] TWO_STAGE_SHIFT = 1,
+	parameter [ 0:0] BARREL_SHIFTER = 0,
+	parameter [ 0:0] TWO_CYCLE_COMPARE = 0,
+	parameter [ 0:0] TWO_CYCLE_ALU = 0,
+	parameter [ 0:0] COMPRESSED_ISA = 0,
+	parameter [ 0:0] CATCH_MISALIGN = 1,
+	parameter [ 0:0] CATCH_ILLINSN = 1,
+	parameter [ 0:0] ENABLE_PCPI = 0,
+	parameter [ 0:0] ENABLE_MUL = 0,
+	parameter [ 0:0] ENABLE_FAST_MUL = 0,
+	parameter [ 0:0] ENABLE_DIV = 0,
+	parameter [ 0:0] ENABLE_IRQ = 0,
+	parameter [ 0:0] ENABLE_IRQ_QREGS = 1,
+	parameter [ 0:0] ENABLE_IRQ_TIMER = 1,
+	parameter [ 0:0] ENABLE_TRACE = 0,
+	parameter [ 0:0] REGS_INIT_ZERO = 0,
+	parameter [31:0] MASKED_IRQ = 32'h 0000_0000,
+	parameter [31:0] LATCHED_IRQ = 32'h ffff_ffff,
+	parameter [31:0] PROGADDR_RESET = 32'h 0000_0000,
+	parameter [31:0] PROGADDR_IRQ = 32'h 0000_0010,
+	parameter [31:0] STACKADDR = 32'h ffff_ffff,
+	parameter [31:0] SMZ_REGION_BASE = 32'h00010000,
+	parameter [31:0] SMZ_REGION_SIZE = 32'h00010000,
+	parameter [ 0:0] ENABLE_SMZ = 1
+) (
+	input clk, resetn,
+	output trap,
+
+	// Memory interface (with SMZ support)
+	output reg        mem_valid,
+	output reg        mem_instr,
+	input             mem_ready,
+	output reg [31:0] mem_addr,
+	output reg [31:0] mem_wdata,
+	output reg [ 3:0] mem_wstrb,
+	input      [31:0] mem_rdata,
+
+	// Look-Ahead Interface
+	output            mem_la_read,
+	output            mem_la_write,
+	output     [31:0] mem_la_addr,
+	output reg [31:0] mem_la_wdata,
+	output reg [ 3:0] mem_la_wstrb,
+
+	// Pico Co-Processor Interface (PCPI)
+	output reg        pcpi_valid,
+	output reg [31:0] pcpi_insn,
+	output     [31:0] pcpi_rs1,
+	output     [31:0] pcpi_rs2,
+	input             pcpi_wr,
+	input      [31:0] pcpi_rd,
+	input             pcpi_wait,
+	input             pcpi_ready,
+
+	// IRQ Interface
+	input      [31:0] irq,
+	output reg [31:0] eoi,
+
+	// SMZ Configuration Interface
+	input      [31:0] smz_key_0,
+	input      [31:0] smz_key_1,
+	input      [31:0] smz_key_2,
+	input      [31:0] smz_key_3
+);
+
+	// Internal signals for SMZ integration
+	wire        cpu_mem_valid_pre_smz;
+	wire [31:0] cpu_mem_addr_pre_smz;
+	wire [31:0] cpu_mem_wdata_pre_smz;
+	wire [ 3:0] cpu_mem_wstrb_pre_smz;
+	wire [31:0] cpu_mem_rdata_post_smz;
+	wire        cpu_mem_ready_post_smz;
+	
+	// Internal mem signals
+	wire        internal_mem_valid;
+	wire [31:0] internal_mem_addr;
+	wire [31:0] internal_mem_wdata;
+	wire [ 3:0] internal_mem_wstrb;
+	wire [31:0] internal_mem_rdata;
+	wire        internal_mem_ready;
+
+	// Instantiate the base PicoRV32 core
+	picorv32 #(
+		.ENABLE_COUNTERS(ENABLE_COUNTERS),
+		.ENABLE_COUNTERS64(ENABLE_COUNTERS64),
+		.ENABLE_REGS_16_31(ENABLE_REGS_16_31),
+		.ENABLE_REGS_DUALPORT(ENABLE_REGS_DUALPORT),
+		.LATCHED_MEM_RDATA(LATCHED_MEM_RDATA),
+		.TWO_STAGE_SHIFT(TWO_STAGE_SHIFT),
+		.BARREL_SHIFTER(BARREL_SHIFTER),
+		.TWO_CYCLE_COMPARE(TWO_CYCLE_COMPARE),
+		.TWO_CYCLE_ALU(TWO_CYCLE_ALU),
+		.COMPRESSED_ISA(COMPRESSED_ISA),
+		.CATCH_MISALIGN(CATCH_MISALIGN),
+		.CATCH_ILLINSN(CATCH_ILLINSN),
+		.ENABLE_PCPI(ENABLE_PCPI),
+		.ENABLE_MUL(ENABLE_MUL),
+		.ENABLE_FAST_MUL(ENABLE_FAST_MUL),
+		.ENABLE_DIV(ENABLE_DIV),
+		.ENABLE_IRQ(ENABLE_IRQ),
+		.ENABLE_IRQ_QREGS(ENABLE_IRQ_QREGS),
+		.ENABLE_IRQ_TIMER(ENABLE_IRQ_TIMER),
+		.ENABLE_TRACE(ENABLE_TRACE),
+		.REGS_INIT_ZERO(REGS_INIT_ZERO),
+		.MASKED_IRQ(MASKED_IRQ),
+		.LATCHED_IRQ(LATCHED_IRQ),
+		.PROGADDR_RESET(PROGADDR_RESET),
+		.PROGADDR_IRQ(PROGADDR_IRQ),
+		.STACKADDR(STACKADDR)
+	) cpu_core (
+		.clk(clk),
+		.resetn(resetn),
+		.trap(trap),
+		.mem_valid(internal_mem_valid),
+		.mem_instr(mem_instr),
+		.mem_ready(internal_mem_ready),
+		.mem_addr(internal_mem_addr),
+		.mem_wdata(internal_mem_wdata),
+		.mem_wstrb(internal_mem_wstrb),
+		.mem_rdata(internal_mem_rdata),
+		.mem_la_read(mem_la_read),
+		.mem_la_write(mem_la_write),
+		.mem_la_addr(mem_la_addr),
+		.mem_la_wdata(mem_la_wdata),
+		.mem_la_wstrb(mem_la_wstrb),
+		.pcpi_valid(pcpi_valid),
+		.pcpi_insn(pcpi_insn),
+		.pcpi_rs1(pcpi_rs1),
+		.pcpi_rs2(pcpi_rs2),
+		.pcpi_wr(pcpi_wr),
+		.pcpi_rd(pcpi_rd),
+		.pcpi_wait(pcpi_wait),
+		.pcpi_ready(pcpi_ready),
+		.irq(irq),
+		.eoi(eoi)
+	);
+
+	// Instantiate the SMZ module between CPU and memory
+	picorv32_smz #(
+		.SECURE_REGION_BASE(SMZ_REGION_BASE),
+		.SECURE_REGION_SIZE(SMZ_REGION_SIZE),
+		.ENABLE_SMZ(ENABLE_SMZ)
+	) smz_layer (
+		.clk(clk),
+		.resetn(resetn),
+		.cpu_mem_valid(internal_mem_valid),
+		.cpu_mem_addr(internal_mem_addr),
+		.cpu_mem_wdata(internal_mem_wdata),
+		.cpu_mem_wstrb(internal_mem_wstrb),
+		.cpu_mem_rdata(internal_mem_rdata),
+		.cpu_mem_ready(internal_mem_ready),
+		.mem_valid(mem_valid),
+		.mem_addr(mem_addr),
+		.mem_wdata(mem_wdata),
+		.mem_wstrb(mem_wstrb),
+		.mem_rdata(mem_rdata),
+		.mem_ready(mem_ready),
+		.smz_key_0(smz_key_0),
+		.smz_key_1(smz_key_1),
+		.smz_key_2(smz_key_2),
+		.smz_key_3(smz_key_3)
+	);
+
 endmodule
