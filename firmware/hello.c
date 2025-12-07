@@ -10,5 +10,6 @@
 void hello(void)
 {
 	print_str("hello world\n");
+	smz_test();
 }
 

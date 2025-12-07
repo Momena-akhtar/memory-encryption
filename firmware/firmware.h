@@ -40,4 +40,7 @@ void multest(void);
 // stats.c
 void stats(void);
 
+// smz_test.c
+void smz_test(void);
+
 #endif
